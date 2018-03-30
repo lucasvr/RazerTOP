@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# vim: set noexpandtab tabstop=4 shiftwidth=4 autoindent smartindent:
+
+# Htop-like memory and cpu usage monitor using the Razer keyboard LEDs.
+# Released under the GNU GPL version 3.
+# Lucas C. Villa Real <lucasvr@gobolinux.org>
+
+import colorsys
+import psutil
+import math
+import sys
+
+from daemonize import Daemonize
+from openrazer.client import DeviceManager
+from openrazer.client import constants as razer_constants
+
+
+def bar_color(step, col, usage):
+	palette = [x/360.0 for x in range(0, 120, step)]
+	index = int(math.floor(usage / step))
+	if index >= len(palette):
+		index = len(palette)-1
+	if col <= index:
+		hue = palette[col]
+		saturation = 1
+		value = 1
+		rgb = colorsys.hsv_to_rgb(hue, saturation, value)
+		if rgb[0] >= 1 and rgb[1] >= 1:
+			# Workaround: r=1,g=1,b=* renders as black
+			rgb = (rgb[0], 0.99, rgb[2])
+		return tuple(map(lambda x: int(256 * x), rgb))
+	else:
+		return (0,0,0)
+
+def main():
+	device_manager = DeviceManager()
+	device_manager.sync_effects = False
+
+	if len(device_manager.devices) == 0:
+		sys.stderr.write("Error: no Razer devices found")
+		sys.exit(0)
+
+	device = device_manager.devices[0]
+
+	# Memory use: row 0 (`, 1, 2, 3, .., backspace)
+	# CPU0 use:   row 1 (ESC, F1, F2, F3, ..., F12)
+	# CPU1 use:   row 2 (TAB, Q, W, ..., backslash)
+	# CPU2 use:   row 3 (CAPS LOCK, A, ...,  ENTER)
+	# CPU3 use:   row 4 (LSHIFT, Z, X, ..., RSHIFT)
+
+	mem_row = 0
+	mem_col_end = 15
+	mem_step = int(math.floor(100./mem_col_end))
+
+	cpu_rows = [1,2,3,4]
+	cpu_col_end = 15
+	cpu_step = int(math.floor(100./cpu_col_end))
+
+	# Restrict statistics to 4 CPUs
+	if psutil.cpu_count() < len(cpu_rows):
+		cpu_rows = cpu_rows[:psutil.cpu_count()]
+
+	while True:
+		mem_usage = psutil.virtual_memory().percent
+		for col in range(mem_col_end):
+			device.fx.advanced.matrix[mem_row, col] = bar_color(mem_step, col, mem_usage)
+
+		cpu_usage = psutil.cpu_percent(interval=0.5, percpu=True)
+		for row in cpu_rows:
+			for col in range(cpu_col_end):
+				device.fx.advanced.matrix[row, col] = bar_color(cpu_step, col, cpu_usage[row-cpu_rows[0]])
+
+		device.fx.advanced.draw()
+
+if __name__ == "__main__":
+	print("RazerTOP daemon started in the background.")
+	daemon = Daemonize(app="RazerTOP", pid="/dev/null", action=main, keep_fds=[sys.stderr.fileno()])
+	daemon.start()
